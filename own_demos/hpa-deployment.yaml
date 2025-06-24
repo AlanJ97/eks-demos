@@ -1,0 +1,138 @@
+---
+# Namespace for HPA demo
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hpa-demo
+  labels:
+    name: hpa-demo
+
+---
+# Deployment with CPU-intensive application
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-stress-app
+  namespace: hpa-demo
+  labels:
+    app: cpu-stress-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cpu-stress-app
+  template:
+    metadata:
+      labels:
+        app: cpu-stress-app
+    spec:
+      containers:
+      - name: cpu-stress
+        image: registry.k8s.io/hpa-example:latest
+        ports:
+        - containerPort: 80
+          name: http
+        resources:
+          requests:
+            cpu: 200m      # Request 0.2 CPU core
+            memory: 64Mi
+          limits:
+            cpu: 500m      # Limit to 0.5 CPU core
+            memory: 128Mi
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 10
+
+---
+# Service to expose the application
+apiVersion: v1
+kind: Service
+metadata:
+  name: cpu-stress-service
+  namespace: hpa-demo
+  labels:
+    app: cpu-stress-app
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+    name: http
+  selector:
+    app: cpu-stress-app
+
+---
+# Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cpu-stress-hpa
+  namespace: hpa-demo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cpu-stress-app
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50    # Scale when CPU > 50%
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 70    # Scale when memory > 70%
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30   # Wait 30s before scaling up again
+      policies:
+      - type: Percent
+        value: 100                     # Scale up by 100% (double pods)
+        periodSeconds: 30
+      - type: Pods
+        value: 2                       # Or add 2 pods
+        periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300  # Wait 5 minutes before scaling down
+      policies:
+      - type: Percent
+        value: 50                      # Scale down by 50%
+        periodSeconds: 60
+
+---
+# Load Generator Job (for testing)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: load-generator
+  namespace: hpa-demo
+spec:
+  template:
+    spec:
+      containers:
+      - name: load-generator
+        image: busybox:latest
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          echo "Load generator ready. Run this to stress test:"
+          echo "kubectl exec -n hpa-demo job/load-generator -- /bin/sh -c 'for i in \$(seq 1 1000); do wget -q -O- http://cpu-stress-service/stress & done; wait'"
+          sleep 3600  # Keep job alive for 1 hour
+      restartPolicy: Never
